@@ -1,0 +1,494 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#define ASCII_LENGTH ( 257 )
+
+//#ifndef CLOCKS_PER_SEC
+//#define CLOCKS_PER_SEC ( 1000000 )
+//#endif
+
+typedef struct {
+  FILE *FP;
+  int   Buffer;
+  int  Count;
+  //  enum  modes{ w=0, r=1 }MODE; 
+} Bin_File_t;
+
+typedef struct Node_t {
+    int Weight;
+    int Char;
+    struct Node_t *Left_Child;
+    struct Node_t *Right_Child;
+} Node_t;
+
+/* Data Types */
+typedef struct Bit_Node_t {
+    int Bit;
+    struct Bit_Node_t *Next_Ptr;
+} Bit_Node_t;
+
+
+
+//Function Declarations 
+Bin_File_t* Bin_Open_Write(char* File);
+Bin_File_t* Bin_Open_Read(char* File);
+void Bin_Close(Bin_File_t* Bin_FP);
+void Write_Bit(Bin_File_t* Bin_FP, int Bit, int Count);
+int Read_Bit(Bin_File_t* Bin_FP, int Count);
+void Destroy_Tree(Node_t* Root);
+/*Function declarations */
+void Weight_Sort(Node_t* Node_Array[], int Num_Chars);
+Node_t* Huff_Tree(Node_t* Node_Array[], int Num_Chars);
+void Build_Table(Node_t* Root, Bit_Node_t* Table[], Bin_File_t* Out_FP,\
+                 Bit_Node_t* List_Root, Bit_Node_t* List_Tail);
+void Get_EOF(Node_t* Root, Bin_File_t* Out_FP);
+Bit_Node_t* Copy_Bit_List(Bit_Node_t* Bit_List);
+void Destroy_Table(Bit_Node_t* Huffman_Table[]);
+void Destroy_List(Bit_Node_t* Node);
+
+int main(int argc, 
+  char** argv)
+{
+  /* Variable Declarations */
+  FILE *In_FP;
+  Bin_File_t *Out_FP;
+  Node_t  *Node_Array[ASCII_LENGTH];
+  Node_t  *Root;
+  Bit_Node_t *Huffman_Table[ASCII_LENGTH];
+  Bit_Node_t *Travel;
+  int Read_Char;
+  int Num_Chars = 0;
+  int I = 0;
+  double Start_Time, Stop_Time, Secs;
+
+  if ( argc != 3 )
+  {
+    printf("usage:  %s [inputfile] [outputfile]\n",argv[0]);
+    return 1;
+  }
+
+   
+  
+  /* Open Files */
+  if ( !( In_FP = fopen(argv[1], "r") ) )
+  {
+    printf("ERROR: Input file %s does not exist.\n", argv[1]);
+    return 1;
+  }
+
+  Out_FP = Bin_Open_Write(argv[2]);
+
+  /* Initialize Arrays */
+  while (I < ASCII_LENGTH)
+  {
+    Node_Array[I] = NULL;
+    Huffman_Table[I] = NULL;
+    I++;
+  }
+
+  Read_Char = fgetc(In_FP);
+  while (Read_Char != EOF)
+  {
+    if (Node_Array[Read_Char] == NULL)
+    {
+      Node_Array[Read_Char] = malloc(sizeof(Node_t));
+      Node_Array[Read_Char]->Char = Read_Char;
+      Node_Array[Read_Char]->Weight = 0;
+      Num_Chars++;
+    }
+    Node_Array[Read_Char]->Weight++;
+    Node_Array[Read_Char]->Left_Child = NULL;
+    Node_Array[Read_Char]->Right_Child = NULL;
+    Read_Char = fgetc(In_FP);
+  }
+  
+  /* Sort the Array by Weight */
+  Weight_Sort(Node_Array, Num_Chars);
+
+  /* Build a tree from the Weight-sorted array */
+  Root = Huff_Tree(Node_Array, Num_Chars);
+
+  /* Using the tree, build the Encoding Table and write the File Header */
+  Write_Bit(Out_FP, Num_Chars, 8);
+  Get_EOF(Root, Out_FP);
+  Build_Table(Root, Huffman_Table, Out_FP, NULL, NULL);
+  Get_EOF(Root, Out_FP);
+
+  /* Using the table, write a compressed file */
+  rewind(In_FP);
+  Read_Char = fgetc(In_FP);
+  while (Read_Char != EOF)
+  {
+    Travel = Huffman_Table[Read_Char];
+    while( Travel != NULL )
+    {
+      Write_Bit(Out_FP, Travel->Bit, 1);
+      Travel = Travel->Next_Ptr;
+    }
+    Read_Char = fgetc(In_FP);
+  }
+  Get_EOF(Root, Out_FP);
+  
+  Bin_Close(Out_FP);
+  fclose(In_FP);
+  In_FP = NULL;
+  
+  /* Need to destroy/free the tree, 
+     and other malloc'd structs (Encoding Table) */
+  Destroy_Tree(Root);
+  Destroy_Table(Huffman_Table);
+
+  
+
+  return 0;
+} /* main() */
+
+void Weight_Sort(Node_t* Node_Array[], 
+  int Num_Chars)
+{
+  int I = 0;
+  int J = ASCII_LENGTH - 1;
+  Node_t *Temp;
+
+  /*Shift all the NULLs to the End*/
+  I = 0;
+  while (I < ( ASCII_LENGTH ))
+  {
+    if ( Node_Array[I] == NULL )
+    {
+      while (Node_Array[J] == NULL )
+      {
+        J--; /* Find First Non-Null location */
+      }
+      if (J > I)
+      {
+        Node_Array[I] = Node_Array[J];
+        Node_Array[J] = NULL;
+      }
+    }
+    I++;
+  }
+  
+  /* Now, perform a more traditional insertion sort. */
+  I = 1;
+  while ( I < Num_Chars )
+  {
+    J = I;
+    Temp = Node_Array[I];
+    while (J > 0 && Node_Array[J-1]->Weight < Temp->Weight)
+    {
+      Node_Array[J] = Node_Array[J-1];
+      J--;
+    }
+    Node_Array[J] = Temp;
+    I++;
+  }
+} /* Weight_Sort() */
+
+Node_t* Huff_Tree(Node_t* Node_Array[], 
+  int Num_Chars)
+{
+  /* 
+   * Take last two elements of array, make a new node with them as its
+   * children.  Replace these two nodes with one node, and re-sort the Array
+   */
+  int I = Num_Chars - 1;
+  Node_t *Root = NULL;
+  Node_t *Current, *Parent = NULL;
+
+  while (I > 0)
+  {
+    Root = malloc(sizeof(Node_t));
+    Root->Left_Child = Node_Array[I-1];
+    Root->Right_Child = Node_Array[I];
+    Root->Weight = Node_Array[I-1]->Weight + Node_Array[I]->Weight;
+    Root->Char = 258;
+    Node_Array[I] = NULL;
+    Node_Array[I-1] = Root;
+    
+    Weight_Sort(Node_Array, I);
+    I--;
+  }
+
+  /* Attach Pseudo EOF Character to the End */
+  Current = Root;
+  while (Current->Right_Child != NULL)
+  {
+    Parent = Current;
+    Current = Current->Right_Child;
+  }
+  Parent->Right_Child = malloc(sizeof(Node_t));
+  Parent->Right_Child->Left_Child = Current;
+  Parent->Right_Child->Char = 258;
+  Parent->Right_Child->Weight = 1;
+  Parent->Right_Child->Right_Child = malloc(sizeof(Node_t));
+  Current = Parent->Right_Child->Right_Child;
+  Current->Weight = 0;
+  Current->Char = 257;
+  Current->Right_Child = NULL;
+  Current->Left_Child = NULL;
+
+  return Root;
+} /* Huff_Tree() */
+
+void Build_Table(Node_t* Root, 
+  Bit_Node_t* Table[], 
+  Bin_File_t* Out_FP,
+  Bit_Node_t* List_Root, 
+  Bit_Node_t* List_Tail)
+{  
+  Bit_Node_t *Cur;
+  if (List_Root == NULL)
+  { 
+    Cur = malloc(sizeof(Bit_Node_t));
+    List_Root = Cur;
+    List_Tail = List_Root;
+    List_Tail->Next_Ptr = NULL;
+  }
+
+  /* Pre-order Traversal of the Tree, writing bits as we go to build the
+     header */
+  if (Root->Char == 258)/* Internal Node */
+  {
+    Write_Bit(Out_FP, 0, 1);
+    List_Tail->Next_Ptr = malloc(sizeof(Bit_Node_t));
+    List_Tail->Next_Ptr->Next_Ptr = NULL;
+    List_Tail->Bit = 0; /* Go Left */
+    Build_Table(Root->Left_Child, Table, Out_FP, List_Root, List_Tail->Next_Ptr);
+    List_Tail->Bit = 1; /* Go Right */
+    Build_Table(Root->Right_Child, Table, Out_FP, List_Root, List_Tail->Next_Ptr);
+    free(List_Tail->Next_Ptr);
+    List_Tail->Next_Ptr = NULL;
+  }
+  else if (Root->Char == 257) /* Pseudo EOF */
+  {
+    Write_Bit(Out_FP, 1, 1);
+    /*Writing actual Pseudo EOF pattern is handled by Get_EOF() */
+  }
+  else /* Leaf Nodes */
+  {
+    Write_Bit(Out_FP, 1, 1);
+    Write_Bit(Out_FP, Root->Char, 8); /*Write Character positions to header*/
+    Table[Root->Char] = Copy_Bit_List(List_Root);
+  }
+
+  return;
+} /* Build_Table */
+
+void Get_EOF(Node_t* Root, 
+  Bin_File_t* Out_FP)
+{
+  Node_t *Cur;
+
+  /* Write PseudoEOF to header */
+  Cur = Root;
+  while (Cur->Right_Child != NULL)
+  {
+    Cur = Cur->Right_Child;
+    Write_Bit(Out_FP, 1, 1);
+  }
+} /* Get_EOF() */
+
+Bit_Node_t* Copy_Bit_List(Bit_Node_t* Bit_List)
+{
+  Bit_Node_t *New_List, *Cur_New, *Cur;
+  Bit_Node_t *Prev_New = NULL;
+  
+  if (Bit_List == NULL)
+  {
+    return NULL;
+  }
+  
+  New_List = malloc(sizeof(Bit_Node_t));
+  Cur_New = New_List;
+  New_List->Bit = Bit_List->Bit;
+  Cur = Bit_List->Next_Ptr;
+  
+  /* Copy the list by traversing and copying values */
+  while (Cur != NULL)
+  {
+    Cur_New->Next_Ptr = malloc(sizeof(Bit_Node_t));
+    Prev_New = Cur_New;
+    Cur_New = Cur_New->Next_Ptr;
+    Cur_New->Bit = Cur->Bit;
+    Cur = Cur->Next_Ptr;
+  }
+  
+  free(Cur_New);
+  Prev_New->Next_Ptr = NULL;
+  
+  return New_List;
+  
+} /* Copy_Bit_List() */
+
+void Destroy_Table(Bit_Node_t* Huffman_Table[])
+{
+  int I = 0;
+  
+  while (I < ASCII_LENGTH)
+  {
+    Destroy_List(Huffman_Table[I]);
+    I++;
+  }
+  
+  return;
+  
+} /* Destroy_Table() */
+
+void Destroy_List(Bit_Node_t* Node)
+{
+  if (Node == NULL)
+  {
+    return;
+  }
+
+  Destroy_List(Node->Next_Ptr);
+  
+  free(Node);
+  Node = NULL;
+  
+  return;
+  
+} /* Destroy_List() */
+
+//final
+
+//BINARY TREE FUNCTIONS
+
+
+Bin_File_t* Bin_Open_Write(char* File)
+{
+  Bin_File_t *Open_File;
+
+  Open_File = malloc(sizeof(Bin_File_t));
+  
+  if ( !( Open_File->FP = fopen(File, "w") ) )
+  {
+    printf("ERROR: Could not open %s", File);
+    Open_File->Count = 1;
+    return Open_File;
+  }
+  
+  Open_File->Buffer = 0;
+  Open_File->Count = 0;
+  // Open_File->MODE = w;
+  
+  return Open_File;
+  
+} /* Bin_Open_Write() */
+
+Bin_File_t* Bin_Open_Read(char *File)
+{
+  Bin_File_t* Open_File;
+  
+  Open_File = malloc(sizeof(Bin_File_t));
+  
+  if ( !( Open_File->FP = fopen(File, "r") ) )
+  {
+    printf("ERROR: Could not open %s", File);
+    Open_File->Count = -1;
+    return Open_File;
+  }
+
+  Open_File->Buffer = 0;
+  Open_File->Count = 0;
+  // Open_File->MODE = r;
+
+  return Open_File;
+
+} /* Bin_Open_Read() */
+
+void Bin_Close(Bin_File_t* Bin_FP)
+{
+  /* Pad file out, write any bits */
+  int I = 0;
+  
+  I = Bin_FP->Buffer;
+  
+  // if ( Bin_FP->MODE == w )
+  // {
+    if (Bin_FP->Count != 0)
+    {
+      Write_Bit(Bin_FP,0, 8-Bin_FP->Count);
+    }
+    // }
+  /* Close file, free pointer */
+  fclose(Bin_FP->FP);
+  free(Bin_FP);
+  Bin_FP = NULL;
+  return;
+} /* Bin_Close */
+
+void Write_Bit(Bin_File_t* Bin_FP, 
+  int Bit, 
+  int Count)
+{  
+  while ( Count > 0 )
+  {
+    /* Get high Bit of Bit */
+        Bin_FP->Buffer <<= 1;
+        Bin_FP->Buffer = (Bin_FP->Buffer | ( (Bit >> (Count - 1) ) & 1 ) );
+        Bin_FP->Count++;
+  
+    /* If Buffer full, write to file */
+    if (Bin_FP->Count == 8)
+    {
+      fputc( Bin_FP->Buffer, Bin_FP->FP );
+      Bin_FP->Buffer = 0;
+      Bin_FP->Count = 0;
+    }  
+  
+    Count--;
+  }
+
+  return;
+} /* Write_Bit() */
+
+int Read_Bit(Bin_File_t* Bin_FP, 
+  int Count)
+{
+  /* If count is 0, read another char 
+   * Error: -1 if EOF is read
+   * EOF should never be read if the
+   * program works appropriately.
+   */
+  int OutVal=0; 
+
+  while (Count > 0)
+  {  
+    OutVal <<= 1;
+
+    if (Bin_FP->Count == 0)
+    {
+      Bin_FP->Buffer = fgetc(Bin_FP->FP);
+      if (Bin_FP->Buffer == EOF)
+      {
+        return -1;
+      }
+      Bin_FP->Count = 8;
+    }   
+  
+    /* Get high bit of character, decrement count, shift */
+    Bin_FP->Count--;
+    OutVal = ( OutVal | ( ((Bin_FP->Buffer) >> (Bin_FP->Count))  & 1) );
+    Count--;
+  }
+  return OutVal;
+} /* Read_Bit() */
+
+void Destroy_Tree(Node_t* Root)
+{
+  if (Root == NULL)
+  {
+    return;
+  }
+  
+  Destroy_Tree(Root->Left_Child);
+  Destroy_Tree(Root->Right_Child);
+  
+  free(Root);
+  Root = NULL;
+  
+  return;
+} /* Destroy_Tree() */
+

@@ -1,0 +1,156 @@
+typedef struct {
+  FILE *FP;
+  int   Buffer;
+  int  Count;
+  enum  modes{ w=0, r=1 }MODE; 
+} Bin_File_t;
+
+typedef struct Node_t {
+    int Weight;
+    int Char;
+    struct Node_t *Left_Child;
+    struct Node_t *Right_Child;
+} Node_t;
+
+Bin_File_t* Bin_Open_Write(char* File);
+Bin_File_t* Bin_Open_Read(char* File);
+void Bin_Close(Bin_File_t* Bin_FP);
+void Write_Bit(Bin_File_t* Bin_FP, int Bit, int Count);
+int Read_Bit(Bin_File_t* Bin_FP, int Count);
+void Destroy_Tree(Node_t* Root);
+
+Bin_File_t* Bin_Open_Write(char* File)
+{
+  Bin_File_t *Open_File;
+
+  Open_File = malloc(sizeof(Bin_File_t));
+  
+  if ( !( Open_File->FP = fopen(File, "w") ) )
+  {
+    printf("ERROR: Could not open %s", File);
+    Open_File->Count = 1;
+    return Open_File;
+  }
+  
+  Open_File->Buffer = 0;
+  Open_File->Count = 0;
+  Open_File->MODE = w;
+  
+  return Open_File;
+  
+} /* Bin_Open_Write() */
+
+Bin_File_t* Bin_Open_Read(char *File)
+{
+  Bin_File_t* Open_File;
+  
+  Open_File = malloc(sizeof(Bin_File_t));
+  
+  if ( !( Open_File->FP = fopen(File, "r") ) )
+  {
+    printf("ERROR: Could not open %s", File);
+    Open_File->Count = -1;
+    return Open_File;
+  }
+
+  Open_File->Buffer = 0;
+  Open_File->Count = 0;
+  Open_File->MODE = r;
+
+  return Open_File;
+
+} /* Bin_Open_Read() */
+
+void Bin_Close(Bin_File_t* Bin_FP)
+{
+  /* Pad file out, write any bits */
+  int I = 0;
+  
+  I = Bin_FP->Buffer;
+  
+  if ( Bin_FP->MODE == w )
+  {
+    if (Bin_FP->Count != 0)
+    {
+      Write_Bit(Bin_FP,0, 8-Bin_FP->Count);
+    }
+  }
+  /* Close file, free pointer */
+  fclose(Bin_FP->FP);
+  free(Bin_FP);
+  Bin_FP = NULL;
+  return;
+} /* Bin_Close */
+
+void Write_Bit(Bin_File_t* Bin_FP, 
+  int Bit, 
+  int Count)
+{  
+  while ( Count > 0 )
+  {
+    /* Get high Bit of Bit */
+        Bin_FP->Buffer <<= 1;
+        Bin_FP->Buffer = (Bin_FP->Buffer | ( (Bit >> (Count - 1) ) & 1 ) );
+        Bin_FP->Count++;
+  
+    /* If Buffer full, write to file */
+    if (Bin_FP->Count == 8)
+    {
+      fputc( Bin_FP->Buffer, Bin_FP->FP );
+      Bin_FP->Buffer = 0;
+      Bin_FP->Count = 0;
+    }  
+  
+    Count--;
+  }
+
+  return;
+} /* Write_Bit() */
+
+int Read_Bit(Bin_File_t* Bin_FP, 
+  int Count)
+{
+  /* If count is 0, read another char 
+   * Error: -1 if EOF is read
+   * EOF should never be read if the
+   * program works appropriately.
+   */
+  int OutVal=0; 
+
+  while (Count > 0)
+  {  
+    OutVal <<= 1;
+
+    if (Bin_FP->Count == 0)
+    {
+      Bin_FP->Buffer = fgetc(Bin_FP->FP);
+      if (Bin_FP->Buffer == EOF)
+      {
+        return -1;
+      }
+      Bin_FP->Count = 8;
+    }   
+  
+    /* Get high bit of character, decrement count, shift */
+    Bin_FP->Count--;
+    OutVal = ( OutVal | ( ((Bin_FP->Buffer) >> (Bin_FP->Count))  & 1) );
+    Count--;
+  }
+  return OutVal;
+} /* Read_Bit() */
+
+void Destroy_Tree(Node_t* Root)
+{
+  if (Root == NULL)
+  {
+    return;
+  }
+  
+  Destroy_Tree(Root->Left_Child);
+  Destroy_Tree(Root->Right_Child);
+  
+  free(Root);
+  Root = NULL;
+  
+  return;
+} /* Destroy_Tree() *
